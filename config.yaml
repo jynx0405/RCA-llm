@@ -1,0 +1,26 @@
+paths:
+  log_root: "./data/logs"
+  vector_store: "./data/vectors"
+  knowledge_base: "./data/kb/fixes.json"
+  
+embedding:
+  model_name: "all-MiniLM-L6-v2"
+  chunk_size: 500
+  chunk_overlap: 50
+  
+retrieval:
+  top_k: 5
+  similarity_threshold: 0.7
+  
+ui:
+  max_log_display: 7000
+
+ollama:
+  base_url: "http://127.0.0.1:11434"
+  default_model: "llama3.2:latest"
+  temperature: 0.2
+  system_prompt: >
+    You are an expert Root Cause Analysis (RCA) and SRE troubleshooting engineer.
+    Analyze the provided log context, error patterns, and knowledge base solutions.
+    Provide concise, actionable explanations of root causes, impact assessments,
+    and step-by-step remediation commands and fixes.

@@ -1,0 +1,2011 @@
+================================================================================
+PROJECT DIRECTORY STRUCTURE & FILE CONTENTS
+================================================================================
+
+DIRECTORY STRUCTURE:
+----------------------------------------
+RCA/
+├── README.md
+├── app.py
+├── config.yaml
+├── data
+│   ├── kb
+│   │   └── fixes.json
+│   └── vectors
+│       ├── kb_index.faiss
+│       ├── kb_index_meta.pkl
+│       └── log_index.pkl
+├── requirements.txt
+└── src
+    ├── models
+    │   ├── __init__.py
+    │   ├── knowledge_entry.py
+    │   └── log_entry.py
+    ├── services
+    │   ├── __init__.py
+    │   ├── embedding_service.py
+    │   ├── knowledge_base.py
+    │   ├── log_reader.py
+    │   ├── rag_engine.py
+    │   ├── vector_store.py
+    │   └── vector_store_flexible.py
+    └── utils
+        ├── __init__.py
+        ├── chunker.py
+        └── parser.py
+
+================================================================================
+FILE CONTENTS
+================================================================================
+
+================================================================================
+FILE: README.md
+================================================================================
+# final-phase-2
+
+================================================================================
+FILE: app.py
+================================================================================
+import streamlit as st
+import plotly.graph_objects as go
+import plotly.express as px
+import pandas as pd
+from datetime import datetime, timedelta
+import yaml
+
+from src.services.log_reader import LogReader
+from src.services.rag_engine import RAGEngine
+from src.services.knowledge_base import KnowledgeBase
+
+# ... after imports ...
+
+def analyze_logs(log_data, query=None, rag_engine=None, kb=None):
+    """
+    Analyze logs and return structured results
+    """
+    results = {
+        'log_stats': {},
+        'log_data': log_data,
+        'exact_matches': [],
+        'kb_solutions': [],
+        'error_lines': [],
+        'similar_errors': [],
+    }
+    
+    if not log_data or 'structured' not in log_data:
+        return results
+    
+    # Extract structured logs
+    structured_logs = log_data.get('structured', [])
+    
+    # Calculate statistics
+    total_errors = sum(1 for log in structured_logs if log.log_level == 'ERROR')
+    unique_components = set(log.component for log in structured_logs if log.component)
+    
+    results['log_stats'] = {
+        'file_count': log_data.get('file_count', 0),
+        'total_errors': total_errors,
+        'unique_components': len(unique_components),
+    }
+    
+    # Extract error lines
+    error_lines = [str(log) for log in structured_logs if log.log_level == 'ERROR']
+    results['error_lines'] = error_lines
+    
+    # If query provided, search for matches
+    if query and rag_engine:
+        try:
+            # Get raw log text for RAG engine methods
+            raw_log_text = log_data.get('raw', '')
+            
+            # Search for exact matches using RAG engine
+            exact_matches = rag_engine.find_exact_matches(query, raw_log_text)
+            results['exact_matches'] = exact_matches
+            
+            # If no exact matches, find similar errors
+            if not exact_matches:
+                similar = rag_engine.find_similar_errors(query, raw_log_text)  # Use your existing method
+                results['similar_errors'] = similar[:5]  # Top 5 similar
+            
+            # Get KB solutions
+            if kb:
+                # Search KB for error patterns
+                kb_solutions = []
+                
+                # Look for solutions based on error codes
+                error_codes = set()
+                for log in structured_logs:
+                    if log.error_code:
+                        error_codes.add(log.error_code)
+                
+                for error_code in list(error_codes)[:3]:  # Check first 3 error codes
+                    solutions = kb.search_solutions(error_code)
+                    if solutions:
+                        kb_solutions.extend(solutions)
+                
+                # Also search by component
+                for component in list(unique_components)[:2]:  # Check first 2 components
+                    solutions = kb.search_by_component(component)
+                    if solutions:
+                        kb_solutions.extend(solutions)
+                
+                results['kb_solutions'] = kb_solutions[:5]  # Limit to 5 solutions
+            
+        except Exception as e:
+            st.error(f"Error during analysis: {str(e)}")
+    
+    return results
+
+
+# Page config
+st.set_page_config(
+    page_title="LogSentry AI - Enterprise RCA Analyzer",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Load config
+with open("config.yaml", 'r') as f:
+    config = yaml.safe_load(f)
+
+# Initialize services
+@st.cache_resource
+def init_services():
+    return LogReader(), RAGEngine(), KnowledgeBase()
+
+log_reader, rag_engine, kb = init_services()
+
+# Custom CSS
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        color: #1E3A8A;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .sub-header {
+        font-size: 1.5rem;
+        color: #374151;
+        margin-top: 1rem;
+    }
+    .metric-card {
+        background-color: #374151;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #3B82F6;
+        margin: 0.5rem 0;
+    }
+    .log-line {
+        font-family: 'Courier New', monospace;
+        font-size: 0.9rem;
+        padding: 0.2rem;
+        border-radius: 0.2rem;
+    }
+    .log-error { background-color: #FEE2E2; color: #DC2626; }
+    .log-warn { background-color: #FEF3C7; color: #D97706; }
+    .log-info { background-color: #DBEAFE; color: #1D4ED8; }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #374151;
+        border-radius: 4px 4px 0px 0px;
+        gap: 1px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Header
+st.markdown('<h1 class="main-header"> Phase 2: RAG-powered Troubleshooting Assistant</h1>', unsafe_allow_html=True)
+
+
+# Sidebar
+with st.sidebar:
+    st.header(" Analysis Parameters")
+    
+    # Get available log structure
+    log_structure = log_reader.get_available_logs()
+    
+    # Zone selection
+    zones = list(log_structure.keys()) if log_structure else ["EMEA", "ASIA", "AMERICA"]
+    zone = st.selectbox("Zone", zones, index=0 if zones else 0)
+    
+    # Client selection
+    clients = list(log_structure.get(zone, {}).keys()) if zone in log_structure else ["Barclays", "HSBC", "JPMorgan"]
+    client = st.selectbox(" Client", clients, index=0 if clients else 0)
+    
+    # Application selection
+    apps = list(log_structure.get(zone, {}).get(client, {}).keys()) if zone in log_structure and client in log_structure[zone] else ["Unigy", "Pulse", "Touch"]
+    app = st.selectbox(" Application", apps, index=0 if apps else 0)
+    
+    # Version selection
+    versions = log_structure.get(zone, {}).get(client, {}).get(app, []) if zone in log_structure and client in log_structure[zone] and app in log_structure[zone][client] else ["4.0", "3.0"]
+    version = st.selectbox(" Version", versions, index=0 if versions else 0)
+    
+    # Sub-version selection
+    sub_versions = ["4.0.1", "3.0.1", "4.0.0", "3.0.0"]  # This could be dynamic
+    sub_version = st.selectbox(" Sub-Version", sub_versions)
+    
+    # Time range
+    col1, col2 = st.columns(2)
+    with col1:
+        start_time = st.text_input("Start Time", "00:00")
+    with col2:
+        end_time = st.text_input("End Time", "23:59")
+    
+    # Query input
+    st.markdown("---")
+    query = st.text_area(
+        " Enter your query or error description:",
+        "Why did the system fail with timeout errors?",
+        height=100
+    )
+    
+    # Advanced options
+    with st.expander(" Advanced Options"):
+        top_k = st.slider("Top K results", 1, 10, 5)
+        min_similarity = st.slider("Minimum similarity", 0.0, 1.0, 0.6)
+        include_kb = st.checkbox("Include KB fixes", True)
+        index_logs = st.checkbox("Index logs for future", True)
+    
+    # Action button
+    analyze_btn = st.button(" Analyze Logs", type="primary", use_container_width=True)
+    
+    # Quick queries
+    st.markdown("---")
+    st.markdown("** Quick Queries:**")
+    quick_queries = [
+        "Find all timeout errors",
+        "Show database connection issues",
+        "Analyze 500 Internal Server Errors",
+        "Check configuration mismatches"
+    ]
+    for q in quick_queries:
+        if st.button(q, use_container_width=True):
+            query = q
+            st.experimental_rerun()
+
+# Main content
+if analyze_btn or 'results' in st.session_state:
+    if analyze_btn:
+        with st.spinner(" Reading logs..."):
+            log_data, error = log_reader.read_logs(zone, client, app, version, sub_version)
+            
+            if error:
+                st.error(f"Error: {error}")
+                st.stop()
+            
+            with st.spinner(" Analyzing logs..."):
+                # First, get basic analysis results
+                results = analyze_logs(
+                    log_data=log_data,
+                    query=query,
+                    rag_engine=rag_engine,
+                    kb=kb
+                )
+                
+                # Then, get RCA from RAG engine
+                rca_result = rag_engine.process_query(
+                    query=query,
+                    log_data=log_data,
+                    zone=zone,
+                    client=client
+                )
+                
+                # Merge all results
+                results.update({
+                    'rca': rca_result.get('rca', 'No RCA generated'),
+                    'solutions': rca_result.get('solutions', []),
+                    # Make sure log_stats includes RAG engine's stats too
+                    'log_stats': {
+                        **results.get('log_stats', {}),
+                        'query_matches': rca_result.get('log_stats', {}).get('query_matches', 0)
+                    }
+                })
+                
+                st.session_state.results = results
+                st.session_state.log_data = log_data
+                
+                st.success(f" Analysis complete! Found {len(log_data['structured'])} log entries")
+    else:
+        results = st.session_state.results
+        log_data = st.session_state.log_data
+    
+    # Display results in tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        " RCA Summary", 
+        " Analytics", 
+        " Evidence", 
+        " KB Fixes",
+        " Log Details"
+    ])
+    
+    with tab1:
+    # RCA Summary
+        
+        # RCA Summary
+        st.markdown("##  **Troubleshooting Results**")
+        
+        # Query section
+        st.markdown("###  What You Asked")
+        st.info(f"**Query:** \"{query}\"")
+        
+        # What We Found section
+        st.markdown("###  What We Found")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Error Lines", results['log_stats']['total_errors'])
+        with col2:
+            st.metric("Log Files", results['log_stats']['file_count'])
+        with col3:
+            st.metric("Unique Error Types", len(set(results.get('error_lines', []))))
+        
+        # Errors Found section - SCROLLABLE GREEN TEXT
+        st.markdown("###  Errors Found")
+        
+        # Get error lines (prioritize exact matches, then similar errors)
+        error_lines = []
+        if 'exact_matches' in results and results['exact_matches']:
+            error_lines = results['exact_matches']
+            st.success(f" Found {len(error_lines)} exact matches")
+        elif 'similar_errors' in results and results['similar_errors']:
+            error_lines = results['similar_errors']
+            st.warning(f" Found {len(error_lines)} similar errors")
+        
+        if error_lines:
+            # Create a scrollable container for error lines
+            max_height = 300  # Maximum height in pixels
+            error_text = ""
+            
+            for i, line in enumerate(error_lines[:10], 1):  # Show first 10 errors
+                # Truncate long lines for the display
+                display_line = line
+                if len(line) > 100:
+                    display_line = line[:100] + "..."
+                error_text += f"{i}. {display_line}\n"
+            
+            # Create scrollable text area
+            st.text_area(
+                "Error Details",
+                value=error_text,
+                height=min(max_height, 30 + len(error_lines) * 25),  # Dynamic height
+                key="error_display",
+                disabled=True,  # Read-only
+                label_visibility="collapsed"  # Hide the label
+            )
+            
+            # Show full error details in expandable sections
+            st.markdown("** Full Error Details:**")
+            for i, line in enumerate(error_lines[:5], 1):  # Show first 5 full errors
+                with st.expander(f"Error #{i}", expanded=False):
+                    st.code(line, language='text')
+        else:
+            st.info("No matching errors found")
+        
+        # Recommended Fix section
+        st.markdown("###  Recommended Fix")
+        
+        if 'solutions' in results and results['solutions']:
+            for i, sol in enumerate(results['solutions'][:2], 1):  # Show first 2 solutions
+                with st.container():
+                    st.markdown(f"**{sol.get('error', 'Issue')}**")
+                    if sol.get('exact_match', False):
+                        st.success(" **Exact match from Knowledge Base**")
+                    
+                    solution_text = sol.get('solution', '')
+                    if solution_text:
+                        # Format as numbered list
+                        lines = solution_text.split('\n')
+                        for j, step in enumerate(lines, 1):
+                            if step.strip():
+                                st.write(f"{j}. {step.strip()}")
+                    st.markdown("---")
+        else:
+            st.info("No specific solution found in Knowledge Base")
+
+    with tab2:
+    # Analytics Dashboard
+        st.subheader(" **Log Analysis Dashboard**")
+        
+        if 'results' in st.session_state:
+            results = st.session_state.results
+            
+            # Create metrics row - HANDLE BOTH OLD AND NEW FORMATS
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                # Log files
+                if 'log_data' in st.session_state:
+                    st.metric(" Files", st.session_state.log_data.get('file_count', 0))
+                else:
+                    st.metric(" Files", 0)
+            
+            with col2:
+                # Total errors - handle both formats
+                if 'log_stats' in results and 'total_errors' in results['log_stats']:
+                    # Old format
+                    st.metric(" Total Errors", results['log_stats']['total_errors'])
+                elif 'error_lines' in results:
+                    # New simplified format
+                    st.metric(" Total Errors", len(results.get('error_lines', [])))
+                else:
+                    st.metric(" Total Errors", 0)
+            
+            with col3:
+                # Components affected
+                if 'log_stats' in results and 'unique_components' in results['log_stats']:
+                    st.metric(" Components", results['log_stats']['unique_components'])
+                else:
+                    # Count from error lines if available
+                    if 'exact_matches' in results and results['exact_matches']:
+                        import re
+                        components = set()
+                        for line in results['exact_matches']:
+                            match = re.search(r'Component=([A-Za-z]+)', line)
+                            if match:
+                                components.add(match.group(1))
+                        st.metric(" Components", len(components))
+                    else:
+                        st.metric(" Components", 0)
+            
+            with col4:
+                # Confidence
+                if 'exact_matches' in results and results['exact_matches']:
+                    st.metric(" Confidence", "High")
+                elif 'similar_errors' in results and results['similar_errors']:
+                    st.metric(" Confidence", "Medium")
+                else:
+                    st.metric(" Confidence", "Low")
+            
+            # Visualization section
+            st.subheader(" **Error Distribution**")
+            
+            if 'log_data' in st.session_state and 'structured' in st.session_state.log_data:
+                df = pd.DataFrame([entry.to_dict() for entry in st.session_state.log_data['structured']])
+                
+                if not df.empty:
+                    # Create two columns for charts - RESTORED PIE CHART
+                    chart_col1, chart_col2 = st.columns(2)
+                    
+                    with chart_col1:
+                        # Error types pie chart - RESTORED FROM OLD VERSION
+                        if 'error_code' in df.columns and df['error_code'].notna().any():
+                            error_counts = df['error_code'].value_counts().head(8)
+                            if not error_counts.empty:
+                                fig1 = go.Figure(data=[go.Pie(
+                                    labels=error_counts.index,
+                                    values=error_counts.values,
+                                    hole=0.3,
+                                    marker_colors=px.colors.sequential.RdBu
+                                )])
+                                fig1.update_layout(
+                                    title="Top Error Types",
+                                    showlegend=True,
+                                    height=400
+                                )
+                                st.plotly_chart(fig1, use_container_width=True)
+                            else:
+                                st.info("No error codes found in logs")
+                        else:
+                            st.info("Error code data not available")
+                    
+                    with chart_col2:
+                        # Component bar chart
+                        if 'component' in df.columns:
+                            comp_counts = df['component'].value_counts().head(10)
+                            if not comp_counts.empty:
+                                fig2 = px.bar(
+                                    x=comp_counts.index,
+                                    y=comp_counts.values,
+                                    title="Most Affected Components",
+                                    labels={'x': 'Component', 'y': 'Error Count'},
+                                    color=comp_counts.values,
+                                    color_continuous_scale='Viridis'
+                                )
+                                fig2.update_layout(height=400)
+                                st.plotly_chart(fig2, use_container_width=True)
+                            else:
+                                st.info("No component data available")
+                        else:
+                            st.info("Component data not available")
+                    
+                    # ADD TIME SERIES SECTION BACK
+                    st.subheader(" Error Timeline")
+                    if 'timestamp' in df.columns and df['timestamp'].notna().any():
+                        try:
+                            # Convert timestamps
+                            df['time_parsed'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+                            df = df.dropna(subset=['time_parsed'])
+                            
+                            if not df.empty:
+                                # Group by hour
+                                df['hour'] = df['time_parsed'].dt.floor('H')
+                                hourly_counts = df.groupby('hour').size().reset_index(name='count')
+                                
+                                fig3 = px.line(
+                                    hourly_counts,
+                                    x='hour',
+                                    y='count',
+                                    title="Errors Over Time (Last 24 Hours)",
+                                    markers=True
+                                )
+                                fig3.update_layout(
+                                    xaxis_title="Time",
+                                    yaxis_title="Error Count",
+                                    hovermode='x unified'
+                                )
+                                st.plotly_chart(fig3, use_container_width=True)
+                        except Exception as e:
+                            st.warning(f"Could not create timeline: {str(e)}")
+                    
+                    # Error Severity Breakdown
+                    st.subheader(" Error Severity")
+                    if 'log_level' in df.columns:
+                        severity_counts = df['log_level'].value_counts()
+                        if not severity_counts.empty:
+                            col1, col2, col3 = st.columns(3)
+                            levels = {'ERROR': '🔴', 'WARN': '🟡', 'INFO': '🟢'}
+                            
+                            for level, emoji in levels.items():
+                                count = severity_counts.get(level, 0)
+                                if level == 'ERROR':
+                                    with col1:
+                                        st.metric(f"{emoji} Critical Errors", count)
+                                elif level == 'WARN':
+                                    with col2:
+                                        st.metric(f"{emoji} Warnings", count)
+                                elif level == 'INFO':
+                                    with col3:
+                                        st.metric(f"{emoji} Info Messages", count)
+                else:
+                    st.info(" No structured log data available for visualization")
+            else:
+                st.info(" Load logs first using the Analyze button")
+        else:
+            st.info(" Run an analysis first to see dashboard data")
+        
+    with tab3:
+    # Evidence
+        st.subheader(" **What We Found in Logs**")
+        
+        if 'results' in st.session_state:
+            results = st.session_state.results
+            
+            if 'exact_matches' in results:
+                exact_matches = results['exact_matches']
+                similar_errors = results.get('similar_errors', [])
+                
+                if exact_matches:
+                    st.success(f" Found {len(exact_matches)} EXACT matches for your query")
+                    st.subheader(" **Exact Matches**")
+                    for i, line in enumerate(exact_matches[:3], 1):
+                        with st.expander(f"Match #{i}", expanded=(i==1)):
+                            st.code(line)
+                elif similar_errors:
+                    st.warning(f" No exact matches. Found {len(similar_errors)} similar errors")
+                    st.subheader(" **Similar Errors Found**")
+                    for i, line in enumerate(similar_errors[:3], 1):
+                        with st.expander(f"Similar error #{i}", expanded=(i==1)):
+                            st.code(line)
+                else:
+                    st.info(" No matching errors found")
+            
+            # Solutions
+            if 'solutions' in results and results['solutions']:
+                st.subheader(" **Recommended Solution**")
+                for sol in results['solutions'][:2]:  # Show max 2 solutions
+                    with st.container():
+                        st.markdown(f"### **{sol.get('error', 'Issue')}**")
+                        if sol.get('exact_match', False):
+                            st.success(" **Exact match from Knowledge Base**")
+                        
+                        solution_text = sol.get('solution', '')
+                        if solution_text:
+                            steps = solution_text.split('\n')
+                            for step in steps:
+                                if step.strip():
+                                    st.write(f"• {step.strip()}")
+                        
+                        st.markdown("---")
+
+    with tab4:
+        # KB Fixed Log Details
+        st.subheader(" **Knowledge Base Solutions**")
+        
+        if 'results' in st.session_state:
+            results = st.session_state.results
+            
+            # Check if we have solutions in results
+            if 'kb_solutions' in results and results['kb_solutions']:
+                st.success(f" Found {len(results['kb_solutions'])} solutions in Knowledge Base")
+                
+                # Display each solution
+                for i, solution in enumerate(results['kb_solutions'], 1):
+                    with st.expander(f"Solution #{i}: {solution.get('error_type', 'Unknown Error')}"):
+                        # Solution details
+                        st.write(f"**Error Type:** {solution.get('error_type', 'N/A')}")
+                        st.write(f"**Component:** {solution.get('component', 'N/A')}")
+                        st.write(f"**Confidence:** {solution.get('confidence', 'N/A')}")
+                        
+                        # Root cause
+                        st.write("**Root Cause:**")
+                        st.write(solution.get('root_cause', 'No root cause analysis available'))
+                        
+                        # Solution steps
+                        st.write("**Solution Steps:**")
+                        solution_steps = solution.get('solution_steps', [])
+                        if solution_steps:
+                            for j, step in enumerate(solution_steps, 1):
+                                st.write(f"{j}. {step}")
+                        else:
+                            st.write("No specific steps provided")
+                        
+                        # Prevention
+                        if solution.get('prevention'):
+                            st.write("**Prevention Tips:**")
+                            st.write(solution.get('prevention'))
+                        
+                        # Related resources
+                        if solution.get('resources'):
+                            st.write("**Related Resources:**")
+                            for resource in solution.get('resources', []):
+                                st.write(f"- {resource}")
+            
+            elif 'exact_matches' in results and results['exact_matches']:
+                # If we have exact matches but no KB solutions, search for them
+                st.info(" Searching for solutions in Knowledge Base...")
+                
+                # Placeholder for KB search logic
+                # In a real implementation, you would:
+                # 1. Extract error patterns
+                # 2. Query your knowledge base
+                # 3. Display matching solutions
+                
+                # Example mock data
+                with st.expander("Potential Solution: Connection Timeout Error"):
+                    st.write("**Error Type:** Database Connection Timeout")
+                    st.write("**Root Cause:** Connection pool exhaustion")
+                    st.write("**Solution:** Increase connection pool size and add connection validation")
+                    st.write("1. Check current connection pool settings")
+                    st.write("2. Increase max pool size to 50")
+                    st.write("3. Add validation query to connection pool")
+                    st.write("4. Monitor connection usage metrics")
+            else:
+                st.info(" No errors found to search for solutions. Run an analysis first.")
+        else:
+            st.info(" Run an analysis first to see solutions")
+
+    with tab5:
+        # Raw Log Details
+        st.subheader(" Raw Log Contents")
+        
+        # Log level filter
+        log_levels = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
+        selected_level = st.selectbox("Filter by log level", log_levels)
+        
+        # Display logs with syntax highlighting
+        raw_logs = log_data['raw']
+        lines = raw_logs.split('\n')
+        
+        # Create a scrollable log viewer
+        log_container = st.container()
+        with log_container:
+            for line in lines[:config['ui']['max_log_display']]:
+                if selected_level == "ALL" or selected_level in line:
+                    line_lower = line.lower()
+                    if 'error' in line_lower:
+                        st.markdown(f'<div class="log-line log-error">{line}</div>', unsafe_allow_html=True)
+                    elif 'warn' in line_lower:
+                        st.markdown(f'<div class="log-line log-warn">{line}</div>', unsafe_allow_html=True)
+                    elif 'info' in line_lower:
+                        st.markdown(f'<div class="log-line log-info">{line}</div>', unsafe_allow_html=True)
+                    else:
+                        st.code(line, language='bash')
+        
+        if len(lines) > config['ui']['max_log_display']:
+            st.warning(f"Showing first {config['ui']['max_log_display']} lines. Total lines: {len(lines)}")
+
+else:
+    # Landing page
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("""
+        <div class="metric-card">
+            <h3> Fast Analysis</h3>
+            <p>Get RCA in seconds using semantic search</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+        <div class="metric-card">
+            <h3> AI-Powered</h3>
+            <p>RAG architecture with local embeddings</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+        <div class="metric-card">
+            <h3> Enterprise Ready</h3>
+            <p>Multi-zone, multi-client support</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Quick start guide
+    st.markdown("---")
+    st.markdown("###  Quick Start Guide")
+    
+    guide_col1, guide_col2 = st.columns(2)
+    
+    with guide_col1:
+        st.markdown("""
+        1. **Select parameters** from sidebar
+        2. **Enter your query** about the issue
+        3. **Click 'Analyze Logs'** button
+        4. **Review RCA** in the summary tab
+        5. **Check evidence** and KB fixes
+        
+        **Supported Query Types:**
+        - Why did [component] fail?
+        - Find all [error type] errors
+        - What caused the timeout?
+        - Analyze configuration issues
+        """)
+    
+    with guide_col2:
+        st.markdown("""
+        ** Expected Log Structure:**
+        ```
+        E:/LogSpace/
+        ├── ZONE/
+        │   ├── CLIENT/
+        │   │   ├── APP/
+        │   │   │   ├── VERSION/
+        │   │   │   │   ├── SUB_VERSION/
+        │   │   │   │   │   ├── *.error
+        │   │   │   │   │   └── *.info
+        ```
+        
+        **🔧 Features:**
+        - Semantic log search
+        - Automatic RCA generation
+        - Knowledge base integration
+        - Visual analytics
+        - Real-time indexing
+        """)
+    
+    # System stats
+    st.markdown("---")
+    st.markdown("###  System Statistics")
+    
+    stat_col1, stat_col2, stat_col3 = st.columns(3)
+    with stat_col1:
+        st.metric("Vector Store Size", f"{rag_engine.vector_store.size()} chunks")
+    with stat_col2:
+        st.metric("KB Entries", f"{len(kb.entries)} fixes")
+    with stat_col3:
+        st.metric("Embedding Model", config['embedding']['model_name'])
+
+
+# Footer
+st.markdown("---")
+st.markdown("*LogSentry AI v2.0 | RAG-powered Troubleshooting Assistant | Phase 2 Implementation*")
+
+
+================================================================================
+FILE: config.yaml
+================================================================================
+paths:
+  log_root: "E:/LogSpace"
+  vector_store: "./data/vectors"
+  knowledge_base: "./data/kb/fixes.json"
+  
+embedding:
+  model_name: "all-MiniLM-L6-v2"
+  chunk_size: 500
+  chunk_overlap: 50
+  
+retrieval:
+  top_k: 5
+  similarity_threshold: 0.7
+  
+ui:
+  max_log_display: 7000
+
+================================================================================
+FILE: requirements.txt
+================================================================================
+streamlit==1.28.1
+sentence-transformers==2.2.2
+faiss-cpu==1.13.1
+pandas==2.2.0
+numpy==1.26.4
+pyyaml==6.0.1
+scikit-learn==1.4.0
+chromadb==0.4.22
+plotly==5.18.0
+transformers==4.37.2
+torch==2.1.2
+tqdm==4.66.1
+
+================================================================================
+FILE: data\kb\fixes.json
+================================================================================
+[
+  {
+    "issue": "E_INTERNAL_FAILURE",
+    "root_cause": "Unhandled exception in core service or memory corruption",
+    "solution": "1. Check recent deployments for code changes\n2. Review service logs for stack traces\n3. Restart affected service with debug logging enabled\n4. Run memory profiling tools",
+    "affected_components": ["DataSync", "AuthService", "DBHandler", "APIClient"],
+    "tags": ["critical", "internal", "crash"],
+    "confidence": 0.95
+  },
+  {
+    "issue": "E_NETWORK_DOWN",
+    "root_cause": "Network interface failure, firewall blockage, or ISP outage",
+    "solution": "1. Ping internal and external endpoints\n2. Check firewall rules (inbound/outbound)\n3. Verify DNS resolution is working\n4. Test with alternative network path\n5. Contact network operations team",
+    "affected_components": ["Monitor", "APIClient", "LogIngestor"],
+    "tags": ["network", "connectivity", "outage"],
+    "confidence": 0.90
+  },
+  {
+    "issue": "E_TIMEOUT",
+    "root_cause": "Service response delay, slow database queries, or external API latency",
+    "solution": "1. Check database query performance indexes\n2. Review external API response times\n3. Increase timeout thresholds temporarily\n4. Implement circuit breaker pattern\n5. Add request queuing with fallback mechanism",
+    "affected_components": ["DBHandler", "APIClient", "DataSync"],
+    "tags": ["performance", "timeout", "latency"],
+    "confidence": 0.85
+  },
+  {
+    "issue": "E_DB_FAIL",
+    "root_cause": "Database connection pool exhausted, query syntax error, or deadlock",
+    "solution": "1. Check database connection pool usage metrics\n2. Review recent database schema changes\n3. Kill long-running queries blocking others\n4. Increase connection pool size\n5. Verify database credentials and permissions",
+    "affected_components": ["DBHandler", "DataSync", "AuthService"],
+    "tags": ["database", "connection", "query"],
+    "confidence": 0.88
+  },
+  {
+    "issue": "E_API_UNAVAILABLE",
+    "root_cause": "External API service down, rate limiting, or authentication failure",
+    "solution": "1. Verify external API status page\n2. Check API rate limit usage and quotas\n3. Renew API authentication tokens/keys\n4. Implement retry logic with exponential backoff\n5. Switch to backup API endpoint if available",
+    "affected_components": ["APIClient", "Monitor", "DataSync"],
+    "tags": ["api", "external", "integration"],
+    "confidence": 0.87
+  },
+  {
+    "issue": "E_CONFIG_MISMATCH",
+    "root_cause": "Version mismatch between services, incorrect environment settings",
+    "solution": "1. Compare configuration files across environments\n2. Verify environment variables are set correctly\n3. Check configuration management system\n4. Validate service discovery settings\n5. Rollback recent configuration changes",
+    "affected_components": ["All"],
+    "tags": ["configuration", "version", "settings"],
+    "confidence": 0.92
+  },
+  {
+    "issue": "E_AUTH_FAILED",
+    "root_cause": "Expired credentials, invalid tokens, or authorization server issues",
+    "solution": "1. Check credential expiration dates\n2. Verify token validation endpoint availability\n3. Renew service certificates if expired\n4. Check authorization server status and logs\n5. Implement automatic token refresh mechanism",
+    "affected_components": ["AuthService", "APIClient"],
+    "tags": ["authentication", "security", "token"],
+    "confidence": 0.89
+  },
+  {
+    "issue": "Unigy trading endpoint failure",
+    "root_cause": "Trading gateway connectivity issue or market data feed disruption",
+    "solution": "1. Check trading gateway connectivity and logs\n2. Verify market data subscription status\n3. Review order routing configuration\n4. Test with simulated trades in sandbox\n5. Contact exchange connectivity support team",
+    "affected_components": ["DataSync", "APIClient", "Monitor"],
+    "tags": ["trading", "unigy", "endpoint", "financial"],
+    "confidence": 0.91
+  },
+  {
+    "issue": "Pulse analytics computation timeout",
+    "root_cause": "Large dataset processing, inefficient algorithms, or insufficient resources",
+    "solution": "1. Optimize analytical queries with proper indexes\n2. Implement data partitioning for large datasets\n3. Increase compute resources (CPU/RAM)\n4. Add query timeout and cancellation logic\n5. Cache frequent computation results",
+    "affected_components": ["DBHandler", "DataSync", "CacheManager"],
+    "tags": ["analytics", "pulse", "computation", "performance"],
+    "confidence": 0.86
+  },
+  {
+    "issue": "Touch UI communication error",
+    "root_cause": "WebSocket connection failure, UI component issues, or version mismatch",
+    "solution": "1. Check WebSocket connectivity and handshake\n2. Verify UI component versions and compatibility\n3. Clear browser/client application cache\n4. Review CORS settings and headers\n5. Test with different client devices/browsers",
+    "affected_components": ["APIClient", "Monitor", "CacheManager"],
+    "tags": ["ui", "touch", "communication", "websocket"],
+    "confidence": 0.88
+  },
+  {
+    "issue": "Voice channel initialization error",
+    "root_cause": "Audio service dependencies missing or configuration incorrect",
+    "solution": "1. Verify audio service dependencies are installed\n2. Check audio device configuration and permissions\n3. Test with different audio input/output devices\n4. Review voice channel initialization sequence\n5. Check for conflicting audio services",
+    "affected_components": ["APIClient", "Monitor"],
+    "tags": ["audio", "voice", "unigy", "communication"],
+    "confidence": 0.84
+  },
+  {
+    "issue": "Market data feed disruption",
+    "root_cause": "Data provider connectivity issues or feed configuration problems",
+    "solution": "1. Check data provider connectivity and status\n2. Verify feed subscription and entitlements\n3. Review market data configuration settings\n4. Test with alternative data sources\n5. Contact market data vendor support",
+    "affected_components": ["DataSync", "APIClient"],
+    "tags": ["market-data", "feed", "financial", "unigy"],
+    "confidence": 0.87
+  }
+]
+
+================================================================================
+FILE: data\vectors\kb_index.faiss
+================================================================================
+[Binary file - Size: 342.04 KB - Content omitted]
+
+================================================================================
+FILE: data\vectors\kb_index_meta.pkl
+================================================================================
+[Binary file - Size: 93.64 KB - Content omitted]
+
+================================================================================
+FILE: data\vectors\log_index.pkl
+================================================================================
+[Binary file - Size: 718.74 KB - Content omitted]
+
+================================================================================
+FILE: src\models\__init__.py
+================================================================================
+
+
+================================================================================
+FILE: src\models\knowledge_entry.py
+================================================================================
+from dataclasses import dataclass
+
+@dataclass
+class KnowledgeEntry:
+    issue: str
+    root_cause: str
+    solution: str
+    affected_components: list
+    tags: list
+    confidence: float = 1.0
+
+================================================================================
+FILE: src\models\log_entry.py
+================================================================================
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
+
+@dataclass
+class LogEntry:
+    timestamp: str
+    log_level: str
+    component: str
+    error_code: Optional[str]
+    message: str
+    zone: str
+    client: str
+    app: str
+    version: str
+    raw_line: str
+    
+    def to_dict(self):
+        return {
+            "timestamp": self.timestamp,
+            "log_level": self.log_level,
+            "component": self.component,
+            "error_code": self.error_code,
+            "message": self.message,
+            "zone": self.zone,
+            "client": self.client,
+            "app": self.app,
+            "version": self.version,
+            "raw": self.raw_line
+        }
+
+================================================================================
+FILE: src\services\__init__.py
+================================================================================
+
+
+================================================================================
+FILE: src\services\embedding_service.py
+================================================================================
+import numpy as np
+from sentence_transformers import SentenceTransformer
+import pickle
+import os
+from typing import List, Dict, Any
+import yaml
+
+class EmbeddingService:
+    def __init__(self, config_path="config.yaml"):
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        self.model_name = config['embedding']['model_name']
+        self.model = SentenceTransformer(self.model_name)
+        self.vector_store_path = config['paths']['vector_store']
+        
+        # Create directory if not exists
+        os.makedirs(self.vector_store_path, exist_ok=True)
+    
+    def encode(self, texts: List[str]) -> np.ndarray:
+        """Convert list of texts to embeddings"""
+        return self.model.encode(texts, show_progress_bar=False)
+    
+    def encode_single(self, text: str) -> np.ndarray:
+        """Convert single text to embedding"""
+        return self.encode([text])[0]
+    
+    def save_embeddings(self, embeddings: np.ndarray, metadata: List[Dict], name: str):
+        """Save embeddings and metadata"""
+        save_path = os.path.join(self.vector_store_path, f"{name}.pkl")
+        with open(save_path, 'wb') as f:
+            pickle.dump({
+                'embeddings': embeddings,
+                'metadata': metadata
+            }, f)
+    
+    def load_embeddings(self, name: str):
+        """Load embeddings and metadata"""
+        load_path = os.path.join(self.vector_store_path, f"{name}.pkl")
+        if os.path.exists(load_path):
+            with open(load_path, 'rb') as f:
+                return pickle.load(f)
+        return None
+
+================================================================================
+FILE: src\services\knowledge_base.py
+================================================================================
+import json
+import os
+from typing import List, Dict, Any
+from src.models.knowledge_entry import KnowledgeEntry
+from src.services.vector_store import VectorStore
+from src.utils.chunker import LogChunker
+
+class KnowledgeBase:
+    def __init__(self, kb_path: str = None, config_path="config.yaml"):
+        self.kb_path = kb_path or "./data/kb/fixes.json"
+        self.entries = []
+        self.vector_store = VectorStore(index_name="kb_index", config_path=config_path)
+        self.chunker = LogChunker()
+        
+        self.load_kb()
+        self.index_kb()
+    
+    def load_kb(self):
+        """Load knowledge base from JSON file"""
+        if os.path.exists(self.kb_path):
+            with open(self.kb_path, 'r') as f:
+                data = json.load(f)
+                self.entries = [KnowledgeEntry(**entry) for entry in data]
+        else:
+            # Create default KB entries
+            self.entries = [
+                KnowledgeEntry(
+                    issue="Database connection timeout",
+                    root_cause="Connection pool exhausted or network latency",
+                    solution="Increase connection pool size, check network connectivity",
+                    affected_components=["Database", "API"],
+                    tags=["database", "timeout", "connection"]
+                ),
+                KnowledgeEntry(
+                    issue="API 500 Internal Server Error",
+                    root_cause="Application code error or missing dependency",
+                    solution="Check application logs, verify dependencies, restart service",
+                    affected_components=["API", "Application Server"],
+                    tags=["api", "500", "server"]
+                ),
+                KnowledgeEntry(
+                    issue="Configuration mismatch",
+                    root_cause="Version mismatch between services or incorrect settings",
+                    solution="Verify configuration files, ensure version compatibility",
+                    affected_components=["All"],
+                    tags=["config", "version", "settings"]
+                )
+            ]
+            self.save_kb()
+    
+    def save_kb(self):
+        """Save knowledge base to JSON file"""
+        os.makedirs(os.path.dirname(self.kb_path), exist_ok=True)
+        with open(self.kb_path, 'w') as f:
+            json.dump([entry.__dict__ for entry in self.entries], f, indent=2)
+    
+    def index_kb(self):
+        """Index KB entries in vector store"""
+        texts = []
+        metadatas = []
+        
+        for i, entry in enumerate(self.entries):
+            # Create text representation for embedding
+            text = f"Issue: {entry.issue}\nRoot Cause: {entry.root_cause}\nSolution: {entry.solution}"
+            texts.append(text)
+            
+            metadata = {
+                "id": i,
+                "issue": entry.issue,
+                "root_cause": entry.root_cause,
+                "solution": entry.solution,
+                "affected_components": entry.affected_components,
+                "tags": entry.tags,
+                "type": "kb_fix"
+            }
+            metadatas.append(metadata)
+        
+        self.vector_store.add_documents(texts, metadatas)
+    
+    def search_similar_issues(self, query: str, top_k: int = 3) -> List[Dict]:
+        """Search for similar issues in KB"""
+        results = self.vector_store.search(query, top_k)
+        
+        formatted_results = []
+        for similarity, metadata in results:
+            formatted_results.append({
+                "similarity": round(similarity, 3),
+                "issue": metadata["issue"],
+                "root_cause": metadata["root_cause"],
+                "solution": metadata["solution"],
+                "affected_components": metadata["affected_components"],
+                "confidence": "High" if similarity > 0.8 else "Medium" if similarity > 0.6 else "Low"
+            })
+        
+        return formatted_results
+    
+    def add_fix(self, issue: str, root_cause: str, solution: str, 
+                affected_components: List[str], tags: List[str]):
+        """Add new fix to KB"""
+        new_entry = KnowledgeEntry(
+            issue=issue,
+            root_cause=root_cause,
+            solution=solution,
+            affected_components=affected_components,
+            tags=tags
+        )
+        self.entries.append(new_entry)
+        self.save_kb()
+        self.index_kb()  # Re-index
+    
+    
+    # ... existing code ...
+    
+    def search_solutions(self, error_code: str) -> List[Dict]:
+        """Search for solutions by error code - now searches both mock data and vector store"""
+        solutions = []
+        
+        # Check mock data first
+        mock_solutions = {
+            "ERR-001": [
+                {
+                    'error_type': 'Database Connection Timeout',
+                    'component': 'Database',
+                    'confidence': 'High',
+                    'root_cause': 'Connection pool exhaustion or network latency',
+                    'solution_steps': [
+                        'Increase connection pool size in application.properties',
+                        'Check database server resources',
+                        'Verify network connectivity',
+                        'Add connection timeout retry logic'
+                    ],
+                    'prevention': 'Monitor connection pool metrics regularly',
+                    'resources': ['DB Connection Guide', 'Troubleshooting Handbook']
+                }
+            ],
+            "ERR-002": [
+                {
+                    'error_type': 'Memory Overflow',
+                    'component': 'JVM',
+                    'confidence': 'Medium',
+                    'root_cause': 'Memory leak in application code',
+                    'solution_steps': [
+                        'Increase heap size with -Xmx parameter',
+                        'Run memory profiler to identify leaks',
+                        'Check for infinite loops',
+                        'Review recent code changes'
+                    ],
+                    'prevention': 'Regular memory profiling and code reviews',
+                    'resources': ['JVM Tuning Guide', 'Memory Management']
+                }
+            ]
+        }
+        
+        # Return mock solutions if found
+        if error_code in mock_solutions:
+            return mock_solutions[error_code]
+        
+        # Fallback to vector search
+        vector_results = self.search_similar_issues(error_code, top_k=2)
+        for result in vector_results:
+            solutions.append({
+                'error_type': result['issue'],
+                'component': result['affected_components'][0] if result['affected_components'] else 'Unknown',
+                'confidence': result['confidence'],
+                'root_cause': result['root_cause'],
+                'solution_steps': [step.strip() for step in result['solution'].split('.') if step.strip()],
+                'prevention': 'Regular monitoring and maintenance',
+                'resources': ['Knowledge Base Entry']
+            })
+        
+        return solutions
+    
+    def search_by_component(self, component: str) -> List[Dict]:
+        """Search for solutions by component"""
+        # Mock data - replace with actual KB lookup
+        component_solutions = {
+            "Database": [
+                {
+                    'error_type': 'Connection Issues',
+                    'component': 'Database',
+                    'confidence': 'High',
+                    'root_cause': 'Connection pool configuration',
+                    'solution_steps': [
+                        'Check database connection string',
+                        'Verify database credentials',
+                        'Test network connectivity',
+                        'Review connection pool settings'
+                    ]
+                }
+            ],
+            "API": [
+                {
+                    'error_type': 'Rate Limiting',
+                    'component': 'API',
+                    'confidence': 'Medium',
+                    'root_cause': 'Too many requests to external service',
+                    'solution_steps': [
+                        'Implement request throttling',
+                        'Add circuit breaker pattern',
+                        'Cache API responses',
+                        'Contact API provider for quota increase'
+                    ]
+                }
+            ]
+        }
+        
+        return component_solutions.get(component, [])
+
+================================================================================
+FILE: src\services\log_reader.py
+================================================================================
+import os
+from typing import Dict, Optional, List
+import yaml
+from src.utils.parser import LogParser
+
+class LogReader:
+    def __init__(self, config_path="config.yaml"):
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        self.root_dir = config['paths']['log_root']
+        self.parser = LogParser()
+    
+    def get_log_path(self, zone: str, client: str, app: str, version: str, sub_version: str) -> str:
+        """Get the path to logs based on parameters"""
+        return os.path.join(self.root_dir, zone, client, app, version, sub_version)
+    
+    def read_logs(self, zone: str, client: str, app: str, version: str, sub_version: str) -> tuple:
+        """Read logs from specified location"""
+        base_path = self.get_log_path(zone, client, app, version, sub_version)
+        
+        if not os.path.exists(base_path):
+            return None, f"Log path does not exist: {base_path}"
+        
+        # Find all log files
+        log_files = []
+        for root, dirs, files in os.walk(base_path):
+            for file in files:
+                if file.endswith(('.log', '.error', '.info', '.debug', '.txt')):
+                    log_files.append(os.path.join(root, file))
+        
+        if not log_files:
+            return None, f"No log files found in {base_path}"
+        
+        # Read and parse all logs
+        all_logs = []
+        structured_logs = []
+        
+        for log_file in log_files:
+            try:
+                with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                    all_logs.append(f"=== File: {os.path.basename(log_file)} ===\n{content}")
+                    
+                    # Parse structured logs
+                    for line in content.split('\n'):
+                        if line.strip():
+                            parsed = self.parser.parse_line(
+                                line, zone, client, app, f"{version}/{sub_version}"
+                            )
+                            if parsed:
+                                structured_logs.append(parsed)
+            except Exception as e:
+                all_logs.append(f"Error reading {log_file}: {str(e)}")
+        
+        return {
+            "raw": "\n".join(all_logs),
+            "structured": structured_logs,
+            "file_count": len(log_files),
+            "zone": zone,
+            "client": client,
+            "app": app,
+            "version": f"{version}/{sub_version}"
+        }, None
+    
+    def get_available_logs(self) -> Dict:
+        """Scan and return available log structure"""
+        structure = {}
+        
+        if not os.path.exists(self.root_dir):
+            return structure
+        
+        for zone in os.listdir(self.root_dir):
+            zone_path = os.path.join(self.root_dir, zone)
+            if os.path.isdir(zone_path):
+                structure[zone] = {}
+                for client in os.listdir(zone_path):
+                    client_path = os.path.join(zone_path, client)
+                    if os.path.isdir(client_path):
+                        structure[zone][client] = {}
+                        for app in os.listdir(client_path):
+                            app_path = os.path.join(client_path, app)
+                            if os.path.isdir(app_path):
+                                structure[zone][client][app] = []
+                                for version in os.listdir(app_path):
+                                    version_path = os.path.join(app_path, version)
+                                    if os.path.isdir(version_path):
+                                        structure[zone][client][app].append(version)
+        
+        return structure
+
+================================================================================
+FILE: src\services\rag_engine.py
+================================================================================
+# src/services/rag_engine.py (SIMPLE & PRACTICAL VERSION)
+from typing import List, Dict, Any
+import yaml
+from datetime import datetime
+
+from src.services.vector_store_flexible import FlexibleVectorStore as VectorStore
+from src.services.knowledge_base import KnowledgeBase
+from src.utils.parser import LogParser
+
+class RAGEngine:
+    def __init__(self, config_path="config.yaml"):
+        with open(config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
+        
+        self.vector_store = VectorStore(config_path=config_path)
+        self.knowledge_base = KnowledgeBase(config_path=config_path)
+        self.parser = LogParser()
+        
+        print(f"🧠 RAG Engine initialized")
+        print(f"📚 Knowledge Base: {len(self.knowledge_base.entries)} entries")
+        print(f"📊 Vector Store: {self.vector_store.size()} documents")
+    
+    def find_exact_matches(self, query: str, log_text: str) -> List[str]:
+        """Find exact error messages matching the query"""
+        matches = []
+        lines = log_text.split('\n')
+        
+        # Simple case-insensitive search
+        query_lower = query.lower()
+        
+        for line in lines:
+            if query_lower in line.lower() and 'ERROR' in line:
+                matches.append(line)
+        
+        return matches
+    
+    def find_similar_errors(self, query: str, log_text: str) -> List[str]:
+        """Find similar errors (fallback if no exact matches)"""
+        similar = []
+        lines = log_text.split('\n')
+        
+        # Keywords to look for
+        keywords = ['connection', 'timeout', 'failed', 'error', 'drop', 'crash']
+        query_words = query.lower().split()
+        
+        for line in lines:
+            if 'ERROR' in line:
+                line_lower = line.lower()
+                # Check if any keyword matches
+                for word in query_words + keywords:
+                    if word in line_lower and len(word) > 3:
+                        similar.append(line)
+                        break
+        
+        return list(set(similar))  # Remove duplicates
+    
+    def get_relevant_solutions(self, error_lines: List[str]) -> List[Dict]:
+        """Get KB solutions for the found errors"""
+        solutions = []
+        
+        for line in error_lines[:5]:  # Check first 5 errors
+            # Extract error code if present
+            import re
+            code_match = re.search(r'Code=([A-Z_]+)', line)
+            
+            if code_match:
+                error_code = code_match.group(1)
+                # Search KB using search_solutions (not search_similar_issues)
+                kb_results = self.knowledge_base.search_solutions(error_code)
+                if kb_results:
+                    for kb_sol in kb_results[:1]:  # Take first solution
+                        # Convert to the format expected by your app
+                        solution_text = "\n".join(kb_sol.get('solution_steps', ['No steps provided']))
+                        solutions.append({
+                            "error": kb_sol.get('error_type', error_code),
+                            "solution": solution_text,
+                            "exact_match": True,
+                            "source_line": line[:100] + "..." if len(line) > 100 else line
+                        })
+                else:
+                    # Also try search_similar_issues as fallback
+                    similar_issues = self.knowledge_base.search_similar_issues(error_code, top_k=1)
+                    if similar_issues:
+                        solutions.append({
+                            "error": similar_issues[0]['issue'],
+                            "solution": similar_issues[0]['solution'],
+                            "exact_match": False,
+                            "source_line": line[:100] + "..." if len(line) > 100 else line
+                        })
+        
+        return solutions
+    
+    def process_query(self, query: str, log_data: Dict, zone: str = None, client: str = None) -> Dict:
+        """Simple, practical RCA analysis"""
+        if not log_data or 'raw' not in log_data:
+            return {"error": "No log data available"}
+        
+        log_text = log_data['raw']
+        
+        # Step 1: Look for EXACT matches first
+        exact_matches = self.find_exact_matches(query, log_text)
+        
+        # Step 2: If no exact matches, look for similar errors
+        error_lines = exact_matches if exact_matches else self.find_similar_errors(query, log_text)
+        
+        # Step 3: Get solutions from KB
+        solutions = self.get_relevant_solutions(error_lines)
+        
+        # Step 4: Count total errors in logs (for dashboard)
+        all_error_lines = [line for line in log_text.split('\n') if 'ERROR' in line]
+        
+        # Extract unique components
+        import re
+        all_components = set()
+        for line in all_error_lines:
+            match = re.search(r'Component=([A-Za-z]+)', line)
+            if match:
+                all_components.add(match.group(1))
+        
+        # Step 5: Generate simple RCA
+        rca = self._generate_simple_rca(query, log_data, error_lines, solutions)
+        
+        return {
+            "rca": rca,
+            "exact_matches": exact_matches,
+            "similar_errors": error_lines if not exact_matches else [],
+            "solutions": solutions,
+            # Consistent keys for dashboard
+            "log_stats": {
+                "total_errors": len(all_error_lines),  # Now this exists!
+                "file_count": log_data.get('file_count', 0),
+                "unique_components": len(all_components),
+                "query_matches": len(error_lines)
+            }
+        }
+    
+    def _generate_simple_rca(self, query: str, log_data: Dict, error_lines: List[str], solutions: List[Dict]) -> str:
+        """Generate simple, understandable RCA"""
+        
+        if not error_lines:
+            return f"❌ No errors found matching '{query}' in the logs."
+        
+        # Count unique errors
+        import re
+        error_codes = []
+        for line in error_lines:
+            match = re.search(r'Code=([A-Z_]+)', line)
+            if match:
+                error_codes.append(match.group(1))
+        
+        unique_errors = set(error_codes)
+        
+        rca = f"""
+# 🔍 TROUBLESHOOTING RESULTS
+
+## 📋 **What You Asked**
+**Query**: "{query}"
+
+## 📊 **What We Found**
+**Logs Checked**: {log_data.get('zone', 'N/A')}/{log_data.get('client', 'N/A')}/{log_data.get('app', 'N/A')}
+**Total Error Lines**: {len(error_lines)}
+**Unique Error Types**: {len(unique_errors)}
+
+## 🚨 **Errors Found**
+"""
+        
+        # Show first 3 errors
+        for i, line in enumerate(error_lines[:3], 1):
+            # Clean up the line for display
+            clean_line = line.replace(' - ERROR - ', ' | ').replace(' - App=', ' | App: ')
+            rca += f"{i}. `{clean_line[:80]}...`\n"
+        
+        rca += "\n## 🛠️ **Recommended Fix**\n"
+        
+        if solutions:
+            for i, sol in enumerate(solutions, 1):
+                rca += f"\n**{sol['error']}**\n"
+                # Format solution as bullet points
+                solution_lines = sol['solution'].split('\n')
+                for step in solution_lines:
+                    if step.strip():
+                        rca += f"• {step.strip()}\n"
+        else:
+            rca += "No specific solution in KB. Check the error details above.\n"
+        
+        rca += f"\n---\n*Analyzed at {datetime.now().strftime('%H:%M:%S')}*"
+        
+        return rca
+
+================================================================================
+FILE: src\services\vector_store.py
+================================================================================
+import faiss
+import numpy as np
+from typing import List, Dict, Any, Tuple
+import os
+import pickle
+from src.services.embedding_service import EmbeddingService
+
+class VectorStore:
+    def __init__(self, index_name="log_index", config_path="config.yaml"):
+        self.embedding_service = EmbeddingService(config_path)
+        self.index_name = index_name
+        self.index = None
+        self.metadata = []
+        self.load_index()
+    
+    def load_index(self):
+        """Load existing FAISS index or create new one"""
+        index_path = os.path.join(self.embedding_service.vector_store_path, f"{self.index_name}.faiss")
+        meta_path = os.path.join(self.embedding_service.vector_store_path, f"{self.index_name}_meta.pkl")
+        
+        if os.path.exists(index_path) and os.path.exists(meta_path):
+            self.index = faiss.read_index(index_path)
+            with open(meta_path, 'rb') as f:
+                self.metadata = pickle.load(f)
+        else:
+            # Create new empty index
+            self.index = None
+            self.metadata = []
+    
+    def add_documents(self, texts: List[str], metadatas: List[Dict]):
+        """Add documents to vector store"""
+        if not texts:
+            return
+        
+        embeddings = self.embedding_service.encode(texts)
+        
+        if self.index is None:
+            # Create new index
+            dimension = embeddings.shape[1]
+            self.index = faiss.IndexFlatL2(dimension)
+        
+        # Add to index
+        self.index.add(embeddings.astype('float32'))
+        self.metadata.extend(metadatas)
+        
+        self.save_index()
+    
+    def save_index(self):
+        """Save index and metadata"""
+        if self.index:
+            index_path = os.path.join(self.embedding_service.vector_store_path, f"{self.index_name}.faiss")
+            meta_path = os.path.join(self.embedding_service.vector_store_path, f"{self.index_name}_meta.pkl")
+            
+            faiss.write_index(self.index, index_path)
+            with open(meta_path, 'wb') as f:
+                pickle.dump(self.metadata, f)
+    
+    def search(self, query: str, top_k: int = 5, filter_metadata: Dict = None) -> List[Tuple[float, Dict]]:
+        """Search for similar documents"""
+        if self.index is None or self.index.ntotal == 0:
+            return []
+        
+        query_embedding = self.embedding_service.encode_single(query).astype('float32').reshape(1, -1)
+        distances, indices = self.index.search(query_embedding, min(top_k, self.index.ntotal))
+        
+        results = []
+        for dist, idx in zip(distances[0], indices[0]):
+            if idx < len(self.metadata):
+                # Apply metadata filtering if provided
+                if filter_metadata:
+                    match = all(
+                        self.metadata[idx].get(key) == value 
+                        for key, value in filter_metadata.items()
+                    )
+                    if not match:
+                        continue
+                
+                # Convert L2 distance to similarity score (0-1)
+                similarity = 1 / (1 + dist)
+                results.append((similarity, self.metadata[idx]))
+        
+        return sorted(results, key=lambda x: x[0], reverse=True)
+    
+    def size(self):
+        """Get number of documents in index"""
+        return self.index.ntotal if self.index else 0
+
+================================================================================
+FILE: src\services\vector_store_flexible.py
+================================================================================
+# src/services/vector_store_flexible.py
+import os
+import pickle
+import numpy as np
+from typing import List, Dict, Any, Tuple, Optional
+import yaml
+import annoy
+from src.services.embedding_service import EmbeddingService
+
+class FlexibleVectorStore:
+    def __init__(self, index_name="log_index", config_path="config.yaml"):
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        self.embedding_service = EmbeddingService(config_path)
+        self.index_name = index_name
+        self.vector_store_path = config['paths']['vector_store']
+        self.index = None
+        self.metadata = []
+        self.backend = None
+        
+        # Try different backends in order
+        self._init_backend()
+        self.load_index()
+    
+    def _init_backend(self):
+        """Try to initialize the best available vector backend"""
+        backends = [
+            ("faiss", self._init_faiss),
+            ("annoy", self._init_annoy),
+            ("sklearn", self._init_sklearn),
+            ("numpy", self._init_numpy)  # Basic numpy fallback
+        ]
+        
+        for backend_name, init_func in backends:
+            try:
+                init_func()
+                self.backend = backend_name
+                print(f"✅ Using {backend_name} as vector store backend")
+                return
+            except ImportError as e:
+                print(f"⚠️ {backend_name} not available: {e}")
+                continue
+            except Exception as e:
+                print(f"⚠️ Failed to initialize {backend_name}: {e}")
+                continue
+        
+        raise ImportError("No vector store backend available!")
+    
+    def _init_faiss(self):
+        """Initialize FAISS backend"""
+        import faiss
+        self.faiss = faiss
+        self.dimension = None
+    
+    def _init_annoy(self):
+        """Initialize Annoy backend"""
+        from annoy import AnnoyIndex
+        self.AnnoyIndex = AnnoyIndex
+        self.dimension = None
+    
+    def _init_sklearn(self):
+        """Initialize scikit-learn backend"""
+        from sklearn.neighbors import NearestNeighbors
+        self.NearestNeighbors = NearestNeighbors
+        self.dimension = None
+    
+    def _init_numpy(self):
+        """Initialize numpy fallback backend"""
+        self.dimension = None
+    
+    def load_index(self):
+        """Load existing index or create new one"""
+        index_path = os.path.join(self.vector_store_path, f"{self.index_name}.pkl")
+        
+        if os.path.exists(index_path):
+            with open(index_path, 'rb') as f:
+                data = pickle.load(f)
+                self.index = data.get('index')
+                self.metadata = data.get('metadata', [])
+                self.dimension = data.get('dimension')
+                self.backend = data.get('backend', self.backend)
+            print(f"📂 Loaded existing index with {len(self.metadata)} documents")
+        else:
+            self.index = None
+            self.metadata = []
+    
+    def save_index(self):
+        """Save index and metadata"""
+        os.makedirs(self.vector_store_path, exist_ok=True)
+        
+        save_path = os.path.join(self.vector_store_path, f"{self.index_name}.pkl")
+        with open(save_path, 'wb') as f:
+            pickle.dump({
+                'index': self.index,
+                'metadata': self.metadata,
+                'dimension': self.dimension,
+                'backend': self.backend
+            }, f)
+    
+    def add_documents(self, texts: List[str], metadatas: List[Dict]):
+        """Add documents to vector store using the active backend"""
+        if not texts:
+            return
+        
+        embeddings = self.embedding_service.encode(texts)
+        self.dimension = embeddings.shape[1]
+        
+        if self.backend == "faiss":
+            self._add_faiss(embeddings, metadatas)
+        elif self.backend == "annoy":
+            self._add_annoy(embeddings, metadatas)
+        elif self.backend == "sklearn":
+            self._add_sklearn(embeddings, metadatas)
+        else:
+            self._add_numpy(embeddings, metadatas)
+        
+        self.metadata.extend(metadatas)
+        self.save_index()
+    
+    def _add_faiss(self, embeddings: np.ndarray, metadatas: List[Dict]):
+        """Add to FAISS index"""
+        if self.index is None:
+            self.index = self.faiss.IndexFlatL2(self.dimension)
+        
+        self.index.add(embeddings.astype('float32'))
+    
+    def _add_annoy(self, embeddings: np.ndarray, metadatas: List[Dict]):
+        """Add to Annoy index"""
+        if self.index is None:
+            self.index = self.AnnoyIndex(self.dimension, 'angular')
+        
+        for i, embedding in enumerate(embeddings):
+            self.index.add_item(i, embedding.astype('float32'))
+        
+        self.index.build(10)  # 10 trees
+    
+    def _add_sklearn(self, embeddings: np.ndarray, metadatas: List[Dict]):
+        """Add to scikit-learn index"""
+        if self.index is None:
+            self.index = self.NearestNeighbors(metric='cosine', algorithm='brute')
+            self.embeddings = embeddings
+            self.index.fit(embeddings)
+        else:
+            # For sklearn, we need to refit
+            self.embeddings = np.vstack([self.embeddings, embeddings])
+            self.index.fit(self.embeddings)
+    
+    def _add_numpy(self, embeddings: np.ndarray, metadatas: List[Dict]):
+        """Add to numpy fallback"""
+        if self.index is None:
+            self.index = embeddings
+        else:
+            self.index = np.vstack([self.index, embeddings])
+    
+    def search(self, query: str, top_k: int = 5, filter_metadata: Dict = None) -> List[Tuple[float, Dict]]:
+        """Search for similar documents"""
+        if self.index is None or len(self.metadata) == 0:
+            return []
+        
+        query_embedding = self.embedding_service.encode_single(query)
+        
+        if self.backend == "faiss":
+            return self._search_faiss(query_embedding, top_k, filter_metadata)
+        elif self.backend == "annoy":
+            return self._search_annoy(query_embedding, top_k, filter_metadata)
+        elif self.backend == "sklearn":
+            return self._search_sklearn(query_embedding, top_k, filter_metadata)
+        else:
+            return self._search_numpy(query_embedding, top_k, filter_metadata)
+    
+    def _search_faiss(self, query_embedding: np.ndarray, top_k: int, filter_metadata: Dict):
+        """Search using FAISS"""
+        query_embedding = query_embedding.astype('float32').reshape(1, -1)
+        distances, indices = self.index.search(
+            query_embedding, 
+            min(top_k, self.index.ntotal)
+        )
+        
+        return self._format_results(distances[0], indices[0], filter_metadata)
+    
+    def _search_annoy(self, query_embedding: np.ndarray, top_k: int, filter_metadata: Dict):
+        """Search using Annoy"""
+        indices, distances = self.index.get_nns_by_vector(
+            query_embedding.astype('float32'), 
+            top_k, 
+            include_distances=True
+        )
+        
+        # Annoy returns squared distances, convert to similarity
+        similarities = [1 / (1 + d) for d in distances]
+        return self._format_results(similarities, indices, filter_metadata)
+    
+    def _search_sklearn(self, query_embedding: np.ndarray, top_k: int, filter_metadata: Dict):
+        """Search using scikit-learn"""
+        distances, indices = self.index.kneighbors(
+            query_embedding.reshape(1, -1), 
+            n_neighbors=min(top_k, len(self.embeddings))
+        )
+        
+        # Convert cosine distance to similarity
+        similarities = [1 - d for d in distances[0]]
+        return self._format_results(similarities, indices[0], filter_metadata)
+    
+    def _search_numpy(self, query_embedding: np.ndarray, top_k: int, filter_metadata: Dict):
+        """Search using numpy (brute force)"""
+        # Calculate cosine similarity
+        query_norm = np.linalg.norm(query_embedding)
+        similarities = []
+        
+        for i, doc_embedding in enumerate(self.index):
+            if query_norm == 0 or np.linalg.norm(doc_embedding) == 0:
+                sim = 0
+            else:
+                sim = np.dot(query_embedding, doc_embedding) / (query_norm * np.linalg.norm(doc_embedding))
+            similarities.append(sim)
+        
+        # Get top-k indices
+        top_indices = np.argsort(similarities)[-top_k:][::-1]
+        top_similarities = [similarities[i] for i in top_indices]
+        
+        return self._format_results(top_similarities, top_indices, filter_metadata)
+    
+    def _format_results(self, scores, indices, filter_metadata: Dict) -> List[Tuple[float, Dict]]:
+        """Format search results"""
+        results = []
+        
+        for score, idx in zip(scores, indices):
+            if idx < len(self.metadata):
+                metadata = self.metadata[idx]
+                
+                # Apply filtering
+                if filter_metadata:
+                    match = all(
+                        metadata.get(key) == value 
+                        for key, value in filter_metadata.items()
+                    )
+                    if not match:
+                        continue
+                
+                results.append((float(score), metadata))
+        
+        return sorted(results, key=lambda x: x[0], reverse=True)
+    
+    def size(self):
+        """Get number of documents"""
+        if self.backend == "faiss":
+            return self.index.ntotal if self.index else 0
+        elif self.backend == "annoy":
+            return self.index.get_n_items() if self.index else 0
+        elif self.backend == "sklearn":
+            return len(self.embeddings) if hasattr(self, 'embeddings') else 0
+        else:
+            return len(self.index) if self.index is not None else 0
+
+================================================================================
+FILE: src\utils\__init__.py
+================================================================================
+
+
+================================================================================
+FILE: src\utils\chunker.py
+================================================================================
+from typing import List
+import re
+
+class LogChunker:
+    def __init__(self, chunk_size=500, overlap=50):
+        self.chunk_size = chunk_size
+        self.overlap = overlap
+    
+    def chunk_by_semantics(self, text: str) -> List[str]:
+        """Chunk text based on semantic boundaries (timestamps, error blocks)"""
+        chunks = []
+        
+        # Split by timestamp lines to keep related logs together
+        lines = text.split('\n')
+        current_chunk = []
+        current_length = 0
+        
+        for line in lines:
+            line_length = len(line)
+            
+            # If adding this line would exceed chunk size, save current chunk
+            if current_length + line_length > self.chunk_size and current_chunk:
+                chunks.append('\n'.join(current_chunk))
+                
+                # Keep overlap lines for context
+                overlap_start = max(0, len(current_chunk) - self.overlap)
+                current_chunk = current_chunk[overlap_start:]
+                current_length = sum(len(l) for l in current_chunk)
+            
+            current_chunk.append(line)
+            current_length += line_length
+        
+        # Add the last chunk
+        if current_chunk:
+            chunks.append('\n'.join(current_chunk))
+        
+        return chunks
+    
+    def chunk_by_errors(self, text: str) -> List[str]:
+        """Chunk text by error blocks (groups logs with same error code)"""
+        error_blocks = re.split(r'(?=Code[=:]\s*\w+)', text)
+        return [block.strip() for block in error_blocks if block.strip()]
+
+================================================================================
+FILE: src\utils\parser.py
+================================================================================
+# src/utils/parser.py (UPDATED VERSION)
+import re
+from datetime import datetime
+from typing import List, Optional
+from src.models.log_entry import LogEntry
+
+class LogParser:
+    @staticmethod
+    def parse_line(line: str, zone: str, client: str, app: str, version: str) -> Optional[LogEntry]:
+        """Parse your specific log format"""
+        
+        # Your log format: 2025-12-18T01:59:40.205469Z - ERROR - Component=LogIngestor - Code=E_DB_FAIL - Severity=HIGH - Message=... - App=Unigy
+        
+        pattern = r'(?P<timestamp>[\d\-T:.]+Z)\s+-\s+(?P<level>\w+)\s+-\s+(?P<full_message>.+)'
+        
+        match = re.match(pattern, line.strip())
+        if not match:
+            return None
+        
+        groups = match.groupdict()
+        full_message = groups['full_message']
+        
+        # Extract components from the message part
+        component_match = re.search(r'Component=([A-Za-z]+)', full_message)
+        code_match = re.search(r'Code=([A-Z_]+)', full_message)
+        message_match = re.search(r'Message=([^\-]+)', full_message)
+        
+        return LogEntry(
+            timestamp=groups['timestamp'],
+            log_level=groups['level'],
+            component=component_match.group(1) if component_match else "Unknown",
+            error_code=code_match.group(1) if code_match else None,
+            message=message_match.group(1).strip() if message_match else full_message,
+            zone=zone,
+            client=client,
+            app=app,
+            version=version,
+            raw_line=line.strip()
+        )
+    
+    @staticmethod
+    def extract_patterns(text: str) -> dict:
+        """Extract patterns from your log text"""
+        patterns = {
+            'error_codes': re.findall(r'Code=([A-Z_]+)', text),
+            'components': re.findall(r'Component=([A-Za-z]+)', text),
+            'timestamps': re.findall(r'\d{4}-\d{2}-\d{2}T[\d:.]+Z', text),
+            'trace_ids': re.findall(r'TraceID=([\w\-]+)', text),
+            'severities': re.findall(r'Severity=([A-Z]+)', text),
+            'retry_counts': re.findall(r'RetryCount=(\d+)', text),
+            'messages': re.findall(r'Message=([^\-]+)', text)
+        }
+        return patterns

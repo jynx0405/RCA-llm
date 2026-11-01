@@ -1,0 +1,8 @@
+2025-12-18T01:58:10.105210Z - ERROR - Component=DBHandler - Code=E_TIMEOUT - Severity=HIGH - Message=Database query execution timeout after 30000ms - App=Unigy
+2025-12-18T01:58:14.234567Z - ERROR - Component=DBHandler - Code=E_DB_FAIL - Severity=HIGH - Message=Database connection pool exhausted - App=Unigy
+2025-12-18T01:58:19.456789Z - ERROR - Component=APIClient - Code=E_TIMEOUT - Severity=HIGH - Message=Connection timed out while waiting for response from trading service - App=Unigy
+2025-12-18T01:58:25.678901Z - ERROR - Component=DataSync - Code=E_TIMEOUT - Severity=HIGH - Message=Sync session timed out waiting for DB lock - App=Unigy
+2025-12-18T01:58:30.890123Z - ERROR - Component=Monitor - Code=E_NETWORK_DOWN - Severity=CRITICAL - Message=Trading gateway network heartbeat lost - App=Unigy
+2025-12-18T01:58:35.012345Z - ERROR - Component=AuthService - Code=E_AUTH_FAILED - Severity=MEDIUM - Message=Session authorization token expired or invalid - App=Unigy
+2025-12-18T01:58:40.123456Z - ERROR - Component=DBHandler - Code=E_INTERNAL_FAILURE - Severity=HIGH - Message=Unhandled database worker exception with code 500 Internal Server Error - App=Unigy
+2025-12-18T01:58:45.234567Z - ERROR - Component=LogIngestor - Code=E_CONFIG_MISMATCH - Severity=MEDIUM - Message=Service version configuration mismatch between client and server - App=Unigy
